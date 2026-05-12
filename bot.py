@@ -2,17 +2,11 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from collections import defaultdict
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import Message
-from aiogram.client.default import DefaultBotProperties
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.utils import executor
 import aiosqlite
-from dotenv import load_dotenv
-
-# Загрузка переменных окружения
-load_dotenv()
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,8 +20,9 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
 
 # Инициализация бота и диспетчера
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-dp = Dispatcher()
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
 # Путь к базе данных
 DB_PATH = "reputation.db"
@@ -129,8 +124,8 @@ async def get_top_rep(chat_id: int, limit: int = 20) -> tuple:
         return top_positive, top_negative
 
 
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
+@dp.message_handler(commands=['start'])
+async def cmd_start(message: types.Message):
     """Обработчик команды /start"""
     await message.reply(
         "Reputation Bot\n\n"
@@ -143,8 +138,8 @@ async def cmd_start(message: Message):
     )
 
 
-@dp.message(Command("mr"))
-async def cmd_my_rep(message: Message):
+@dp.message_handler(commands=['mr'])
+async def cmd_my_rep(message: types.Message):
     """Обработчик команды /mr"""
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -154,8 +149,8 @@ async def cmd_my_rep(message: Message):
     await message.reply(f"User: {username}\nReputation: {rep}")
 
 
-@dp.message(Command("cr"))
-async def cmd_top_rep(message: Message):
+@dp.message_handler(commands=['cr'])
+async def cmd_top_rep(message: types.Message):
     """Обработчик команды /cr"""
     chat_id = message.chat.id
     
@@ -185,10 +180,10 @@ async def cmd_top_rep(message: Message):
     await message.reply(response)
 
 
-@dp.message(lambda message: message.text and 
-            ('+rep' in message.text.lower().replace(' ', '') or 
-             '-rep' in message.text.lower().replace(' ', '')))
-async def handle_rep(message: Message):
+@dp.message_handler(lambda message: message.text and 
+                    ('+rep' in message.text.lower().replace(' ', '') or 
+                     '-rep' in message.text.lower().replace(' ', '')))
+async def handle_rep(message: types.Message):
     """Обработчик сообщений с +rep или -rep"""
     text = message.text.lower().replace(' ', '')
     voter_id = message.from_user.id
@@ -212,18 +207,12 @@ async def handle_rep(message: Message):
         await message.reply(result)
         return
     
-    if message.entities:
-        await message.reply("Error: Reply to a user's message to vote.")
-        return
-    
     await message.reply("Error: Reply to a user's message with +rep or -rep.")
 
 
-async def main():
-    """Главная функция запуска бота"""
+async def on_startup(dp):
     await init_db()
-    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    executor.start_polling(dp, on_startup=on_startup, skip_updates=True)
