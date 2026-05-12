@@ -4,7 +4,6 @@ import os
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.utils import executor
 import aiosqlite
 
@@ -21,8 +20,7 @@ if not BOT_TOKEN:
 
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+dp = Dispatcher(bot)
 
 # Путь к базе данных
 DB_PATH = "reputation.db"
@@ -126,7 +124,6 @@ async def get_top_rep(chat_id: int, limit: int = 20) -> tuple:
 
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
-    """Обработчик команды /start"""
     await message.reply(
         "Reputation Bot\n\n"
         "Commands:\n"
@@ -140,7 +137,6 @@ async def cmd_start(message: types.Message):
 
 @dp.message_handler(commands=['mr'])
 async def cmd_my_rep(message: types.Message):
-    """Обработчик команды /mr"""
     user_id = message.from_user.id
     chat_id = message.chat.id
     username = message.from_user.username or message.from_user.full_name
@@ -151,7 +147,6 @@ async def cmd_my_rep(message: types.Message):
 
 @dp.message_handler(commands=['cr'])
 async def cmd_top_rep(message: types.Message):
-    """Обработчик команды /cr"""
     chat_id = message.chat.id
     
     top_positive, top_negative = await get_top_rep(chat_id)
@@ -184,7 +179,6 @@ async def cmd_top_rep(message: types.Message):
                     ('+rep' in message.text.lower().replace(' ', '') or 
                      '-rep' in message.text.lower().replace(' ', '')))
 async def handle_rep(message: types.Message):
-    """Обработчик сообщений с +rep или -rep"""
     text = message.text.lower().replace(' ', '')
     voter_id = message.from_user.id
     chat_id = message.chat.id
