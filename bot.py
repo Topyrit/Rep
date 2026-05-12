@@ -124,6 +124,7 @@ async def get_top_rep(chat_id: int, limit: int = 20) -> tuple:
 
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
+    logging.info(f"Command /start from {message.from_user.id}")
     await message.reply(
         "Reputation Bot\n\n"
         "Commands:\n"
@@ -137,6 +138,7 @@ async def cmd_start(message: types.Message):
 
 @dp.message_handler(commands=['mr'])
 async def cmd_my_rep(message: types.Message):
+    logging.info(f"Command /mr from {message.from_user.id}")
     user_id = message.from_user.id
     chat_id = message.chat.id
     username = message.from_user.username or message.from_user.full_name
@@ -147,6 +149,7 @@ async def cmd_my_rep(message: types.Message):
 
 @dp.message_handler(commands=['cr'])
 async def cmd_top_rep(message: types.Message):
+    logging.info(f"Command /cr from {message.from_user.id}")
     chat_id = message.chat.id
     
     top_positive, top_negative = await get_top_rep(chat_id)
@@ -175,11 +178,20 @@ async def cmd_top_rep(message: types.Message):
     await message.reply(response)
 
 
-@dp.message_handler(lambda message: message.text and 
-                    ('+rep' in message.text.lower().replace(' ', '') or 
-                     '-rep' in message.text.lower().replace(' ', '')))
+@dp.message_handler(content_types=['text'])
 async def handle_rep(message: types.Message):
-    text = message.text.lower().replace(' ', '')
+    """Обработчик ВСЕХ текстовых сообщений с проверкой на +rep или -rep"""
+    if not message.text:
+        return
+    
+    text = message.text.strip().lower()
+    
+    # Проверяем, содержит ли сообщение +rep или -rep
+    if '+rep' not in text and '-rep' not in text:
+        return
+    
+    logging.info(f"Rep command detected from {message.from_user.id}: {text}")
+    
     voter_id = message.from_user.id
     chat_id = message.chat.id
     
@@ -188,6 +200,7 @@ async def handle_rep(message: types.Message):
     else:
         vote_type = '-'
     
+    # Проверяем reply
     if message.reply_to_message and message.reply_to_message.from_user:
         target_id = message.reply_to_message.from_user.id
         target_username = (message.reply_to_message.from_user.username or 
@@ -201,11 +214,13 @@ async def handle_rep(message: types.Message):
         await message.reply(result)
         return
     
+    # Если нет reply
     await message.reply("Error: Reply to a user's message with +rep or -rep.")
 
 
 async def on_startup(dp):
     await init_db()
+    logging.info("Bot started successfully")
 
 
 if __name__ == "__main__":
