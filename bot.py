@@ -19,6 +19,9 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is not set in environment variables")
 
+# ID администратора
+ADMIN_ID = 6816904479
+
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
 dp = Dispatcher(bot)
@@ -52,11 +55,67 @@ async def init_db():
                 )
             """)
             
+            # Новая таблица заблокированных пользователей
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS banned_users (
+                    user_id INTEGER PRIMARY KEY,
+                    banned_by INTEGER,
+                    banned_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             await db.commit()
         logging.info("Database initialized successfully")
     except Exception as e:
         logging.error(f"Database init error: {e}")
         logging.error(traceback.format_exc())
+
+
+async def is_banned(user_id: int) -> bool:
+    """Проверка, заблокирован ли пользователь"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT user_id FROM banned_users WHERE user_id = ?",
+                (user_id,)
+            ) as cursor:
+                result = await cursor.fetchone()
+                return result is not None
+    except Exception as e:
+        logging.error(f"is_banned error: {e}")
+        return False
+
+
+async def ban_user(user_id: int, banned_by: int) -> bool:
+    """Блокировка пользователя"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO banned_users (user_id, banned_by, banned_date) VALUES (?, ?, datetime('now'))",
+                (user_id, banned_by)
+            )
+            await db.commit()
+        logging.info(f"User {user_id} banned by {banned_by}")
+        return True
+    except Exception as e:
+        logging.error(f"ban_user error: {e}")
+        return False
+
+
+async def unban_user(user_id: int) -> bool:
+    """Разблокировка пользователя"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "DELETE FROM banned_users WHERE user_id = ?",
+                (user_id,)
+            )
+            await db.commit()
+        logging.info(f"User {user_id} unbanned")
+        return True
+    except Exception as e:
+        logging.error(f"unban_user error: {e}")
+        return False
 
 
 async def get_rep(user_id: int, chat_id: int) -> int:
@@ -195,10 +254,107 @@ async def cmd_top_rep(message: types.Message):
     await message.reply(response)
 
 
+@dp.message_handler(commands=['rban'])
+async def cmd_rban(message: types.Message):
+    """Блокировка пользователя. Только для админа."""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await message.reply("Error: Access denied.")
+        return
+    
+    # Получаем аргументы команды
+    args = message.get_args()
+    if not args:
+        await message.reply("Usage: /rban [user_id]")
+        return
+    
+    try:
+        target_id = int(args.strip())
+    except ValueError:
+        await message.reply("Error: Invalid user ID.")
+        return
+    
+    if target_id == ADMIN_ID:
+        await message.reply("Error: Cannot ban yourself.")
+        return
+    
+    success = await ban_user(target_id, user_id)
+    if success:
+        await message.reply(f"User {target_id} has been banned. Bot will ignore their messages.")
+    else:
+        await message.reply("Error: Failed to ban user.")
+
+
+@dp.message_handler(commands=['runban'])
+async def cmd_runban(message: types.Message):
+    """Разблокировка пользователя. Только для админа."""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await message.reply("Error: Access denied.")
+        return
+    
+    args = message.get_args()
+    if not args:
+        await message.reply("Usage: /runban [user_id]")
+        return
+    
+    try:
+        target_id = int(args.strip())
+    except ValueError:
+        await message.reply("Error: Invalid user ID.")
+        return
+    
+    success = await unban_user(target_id)
+    if success:
+        await message.reply(f"User {target_id} has been unbanned.")
+    else:
+        await message.reply("Error: Failed to unban user.")
+
+
+@dp.message_handler(commands=['rbanlist'])
+async def cmd_rbanlist(message: types.Message):
+    """Список заблокированных пользователей. Только для админа."""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await message.reply("Error: Access denied.")
+        return
+    
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT user_id, banned_by, banned_date FROM banned_users ORDER BY banned_date DESC"
+            ) as cursor:
+                banned = await cursor.fetchall()
+        
+        if not banned:
+            await message.reply("No banned users.")
+            return
+        
+        response = "Banned users:\n"
+        response += "-" * 20 + "\n"
+        for uid, banned_by, date in banned:
+            response += f"ID: {uid}\n  Banned by: {banned_by}\n  Date: {date}\n\n"
+        
+        await message.reply(response)
+    except Exception as e:
+        logging.error(f"rbanlist error: {e}")
+        await message.reply("Error: Failed to get ban list.")
+
+
 @dp.message_handler(content_types=['text'])
 async def handle_all_text(message: types.Message):
     """Обработчик всех текстовых сообщений"""
     if not message.text:
+        return
+    
+    user_id = message.from_user.id
+    
+    # Проверка: заблокирован ли пользователь
+    if await is_banned(user_id):
+        logging.info(f"Blocked message from banned user {user_id}")
         return
     
     text = message.text.strip().lower()
@@ -207,9 +363,9 @@ async def handle_all_text(message: types.Message):
     if text not in ['+rep', '-rep', '+реп', '-реп']:
         return
     
-    logging.info(f"Vote attempt: user={message.from_user.id}, text={text}, reply={message.reply_to_message is not None}")
+    logging.info(f"Vote attempt: user={user_id}, text={text}, reply={message.reply_to_message is not None}")
     
-    voter_id = message.from_user.id
+    voter_id = user_id
     chat_id = message.chat.id
     
     if '+rep' in text or '+реп' in text:
@@ -235,7 +391,7 @@ async def handle_all_text(message: types.Message):
 
 async def on_startup(dp):
     await init_db()
-    logging.info("Bot started successfully")
+    logging.info(f"Bot started successfully. Admin ID: {ADMIN_ID}")
 
 
 if __name__ == "__main__":
