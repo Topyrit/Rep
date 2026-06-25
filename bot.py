@@ -55,7 +55,6 @@ async def init_db():
                 )
             """)
             
-            # Новая таблица заблокированных пользователей
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS banned_users (
                     user_id INTEGER PRIMARY KEY,
@@ -133,6 +132,48 @@ async def get_rep(user_id: int, chat_id: int) -> int:
         return 0
 
 
+async def set_rep(user_id: int, chat_id: int, rep_value: int, username: str = None) -> bool:
+    """Установка репутации пользователя (для админа)"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """INSERT INTO reputation (user_id, chat_id, username, rep) 
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, chat_id) 
+                   DO UPDATE SET rep = ?, username = COALESCE(?, username)""",
+                (user_id, chat_id, username, rep_value,
+                 rep_value, username)
+            )
+            await db.commit()
+        logging.info(f"Admin set rep for user {user_id} in chat {chat_id}: {rep_value}")
+        return True
+    except Exception as e:
+        logging.error(f"set_rep error: {e}")
+        return False
+
+
+async def add_rep(user_id: int, chat_id: int, amount: int, username: str = None) -> tuple:
+    """Добавление/вычитание репутации пользователя (для админа)"""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """INSERT INTO reputation (user_id, chat_id, username, rep) 
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(user_id, chat_id) 
+                   DO UPDATE SET rep = rep + ?, username = COALESCE(?, username)""",
+                (user_id, chat_id, username, amount,
+                 amount, username)
+            )
+            await db.commit()
+            
+            new_rep = await get_rep(user_id, chat_id)
+        logging.info(f"Admin added {amount} rep to user {user_id} in chat {chat_id}, new rep: {new_rep}")
+        return True, new_rep
+    except Exception as e:
+        logging.error(f"add_rep error: {e}")
+        return False, 0
+
+
 async def change_rep(voter_id: int, target_id: int, chat_id: int, 
                      vote_type: str, username: str = None) -> str:
     """Изменение репутации пользователя"""
@@ -201,6 +242,8 @@ async def get_top_rep(chat_id: int, limit: int = 20) -> tuple:
         return [], []
 
 
+# ==================== КОМАНДЫ ====================
+
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
     await message.reply(
@@ -209,8 +252,7 @@ async def cmd_start(message: types.Message):
         "+rep @username - Increase reputation\n"
         "-rep @username - Decrease reputation\n"
         "/mr - Your reputation\n"
-        "/cr - Reputation leaderboard\n\n"
-        "Rules: You can vote for each user once per day."
+        "/cr - Reputation leaderboard"
     )
 
 
@@ -254,6 +296,8 @@ async def cmd_top_rep(message: types.Message):
     await message.reply(response)
 
 
+# ==================== АДМИН-КОМАНДЫ ====================
+
 @dp.message_handler(commands=['rban'])
 async def cmd_rban(message: types.Message):
     """Блокировка пользователя. Только для админа."""
@@ -263,7 +307,6 @@ async def cmd_rban(message: types.Message):
         await message.reply("Error: Access denied.")
         return
     
-    # Получаем аргументы команды
     args = message.get_args()
     if not args:
         await message.reply("Usage: /rban [user_id]")
@@ -281,7 +324,7 @@ async def cmd_rban(message: types.Message):
     
     success = await ban_user(target_id, user_id)
     if success:
-        await message.reply(f"User {target_id} has been banned. Bot will ignore their messages.")
+        await message.reply(f"User {target_id} has been banned.")
     else:
         await message.reply("Error: Failed to ban user.")
 
@@ -343,6 +386,98 @@ async def cmd_rbanlist(message: types.Message):
         logging.error(f"rbanlist error: {e}")
         await message.reply("Error: Failed to get ban list.")
 
+
+@dp.message_handler(commands=['setrep'])
+async def cmd_setrep(message: types.Message):
+    """Установить репутацию пользователю. Только для админа.
+    Использование: /setrep [user_id] [число]"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await message.reply("Error: Access denied.")
+        return
+    
+    args = message.get_args().strip().split()
+    if len(args) < 2:
+        await message.reply("Usage: /setrep [user_id] [value]\nExample: /setrep 123456 50")
+        return
+    
+    try:
+        target_id = int(args[0])
+        rep_value = int(args[1])
+    except ValueError:
+        await message.reply("Error: User ID and value must be numbers.")
+        return
+    
+    target_username = str(target_id)
+    
+    success = await set_rep(target_id, message.chat.id, rep_value, target_username)
+    if success:
+        await message.reply(f"Reputation for user {target_id} set to {rep_value}.")
+    else:
+        await message.reply("Error: Failed to set reputation.")
+
+
+@dp.message_handler(commands=['addrep'])
+async def cmd_addrep(message: types.Message):
+    """Добавить/отнять репутацию пользователю. Только для админа.
+    Использование: /addrep [user_id] [число] (отрицательное число для вычитания)"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await message.reply("Error: Access denied.")
+        return
+    
+    args = message.get_args().strip().split()
+    if len(args) < 2:
+        await message.reply("Usage: /addrep [user_id] [amount]\nExample: /addrep 123456 10\nExample: /addrep 123456 -5")
+        return
+    
+    try:
+        target_id = int(args[0])
+        amount = int(args[1])
+    except ValueError:
+        await message.reply("Error: User ID and amount must be numbers.")
+        return
+    
+    target_username = str(target_id)
+    
+    success, new_rep = await add_rep(target_id, message.chat.id, amount, target_username)
+    if success:
+        if amount >= 0:
+            await message.reply(f"Added {amount} reputation to user {target_id}. New reputation: {new_rep}")
+        else:
+            await message.reply(f"Removed {abs(amount)} reputation from user {target_id}. New reputation: {new_rep}")
+    else:
+        await message.reply("Error: Failed to change reputation.")
+
+
+@dp.message_handler(commands=['checkrep'])
+async def cmd_checkrep(message: types.Message):
+    """Проверить репутацию любого пользователя. Только для админа.
+    Использование: /checkrep [user_id]"""
+    user_id = message.from_user.id
+    
+    if user_id != ADMIN_ID:
+        await message.reply("Error: Access denied.")
+        return
+    
+    args = message.get_args().strip()
+    if not args:
+        await message.reply("Usage: /checkrep [user_id]")
+        return
+    
+    try:
+        target_id = int(args)
+    except ValueError:
+        await message.reply("Error: Invalid user ID.")
+        return
+    
+    rep = await get_rep(target_id, message.chat.id)
+    await message.reply(f"User ID: {target_id}\nReputation: {rep}")
+
+
+# ==================== ОБРАБОТЧИК СООБЩЕНИЙ ====================
 
 @dp.message_handler(content_types=['text'])
 async def handle_all_text(message: types.Message):
